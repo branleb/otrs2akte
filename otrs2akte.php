@@ -25,6 +25,8 @@
 	  "number:",
 	  "login:",
 	  "debug",
+	  "with-links",
+	  "with-links-merged",
   );
   $options = getopt($shortopts, $longopts);
   if(is_debug($options)) {
@@ -52,8 +54,11 @@
   $ticketNumber = isset($options["number"]) ? $options["number"] : $ticketNumber;
   
   //! OTRS Login User name
-  $loginUser = isset($options["l"]) ? $options[""] : null;
+  $loginUser = isset($options["l"]) ? $options["l"] : null;
   $loginUser = isset($options["login"]) ? $options["login"] : $loginUser;
+  
+  //! Linked Tickets
+  $handleLinkedTickets = isset($options["with-links-merged"]) ? "merge" : (isset($options["with-links"]) ? "links" : "no");
   
   if($host === null) {
     echo "Missing OTRS host".PHP_EOL;
@@ -81,18 +86,15 @@
   if($ticketId === null) {
     $ticketNumber = number_format($ticketNumber, 0, '.', ''); 
     $ticketId = $otrs->getTicketId($ticketNumber);
-    var_dump("---------------------------ID----------------------------------");
-    var_dump($ticketNumber);
-    var_dump($ticketId);
   }
   
   $ticket = new OTRSTicket($otrs, $ticketId);
   
   $exportDestination = implode(DIRECTORY_SEPARATOR, array("tmp", "otrs-export",$ticketId, time()));
   mkdir($exportDestination, 0700, true);
-  var_dump("---------------------------TARGET----------------------------------");
-  var_dump($exportDestination);
-  $out = $ticket->export($exportDestination);
-  var_dump($out);
-  
+  $out = $ticket->export($exportDestination, $handleLinkedTickets);
+  foreach($out as $index => $file) {
+    print "Export file#".$index.": ".$file.PHP_EOL;
+  }
+//   var_export($out);
   

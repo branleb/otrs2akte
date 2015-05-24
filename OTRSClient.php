@@ -134,4 +134,17 @@ class OTRSClient
       )
     );
   }
+  
+  public function getLinkedTickets($id)
+  {
+    return $this->remoteCall("LinkObject", "LinkList", array(
+	"Object", "Ticket",
+	"Key", $id,
+	"Object2", "Ticket",
+	"State", "Valid",
+	"Type", "Normal",
+	"Direction", "Source",      # (optional) default Both (Source|Target|Both)
+      )
+    );
+  }
 }

@@ -61,16 +61,89 @@ class OTRSTicket
     }
   }
   
-  public function export($basedir)
+  public function export($basedir, $handleLinkedTickets = "no")
+  {
+    $ids = array($this->id);
+    if($handleLinkedTickets != "no") {
+      $tickets = $this->otrs->getLinkedTickets($this->id);
+      foreach($tickets->Ticket->Normal->Source as $ticket => $active) {
+	$ids[] = $ticket;
+      }
+    }
+    
+    $retval = array();
+    if($handleLinkedTickets == "merge") {
+	$retval[] = $this->exportMergeTo($basedir, $ids, $handleLinkedTickets);
+    } else {
+      foreach($ids as $id) {
+	$retval[] = $this->exportSingleTo($basedir, $id, $handleLinkedTickets);
+      }
+    }
+    return $retval;
+  }
+    
+  protected function exportMergeTo($basedir, array $ids, $handleLinkedTickets)
+  {
+    $articles = array();
+    foreach($ids as $id) {
+      $articles["Ticket_".$id] = $this->otrs->getTicketArticles($id);
+      if($articles["Ticket_".$id] instanceof stdClass) {
+	$articles["Ticket_".$id] = array($articles["Ticket_".$id]);
+      }
+      foreach($articles["Ticket_".$id] as $key => $article) {
+	if($article->StateType === "merged") {
+	  unset($articles["Ticket_".$id][$key]);
+	}
+      }
+    }
+    
+    reset($ids);
+    return $this->exportTo($basedir, current($id), $this->flattenArticles($articles));
+  }
+    
+  protected function flattenArticles(array $articles)
+  {
+    $flattened = array();
+    foreach($articles as $ticketIndex => $ticketArticles) {
+      foreach($ticketArticles as $index => $article) {
+	$flattened[] = $article;
+      }
+    }
+    
+    usort($flattened, array($this, "sortArticles"));
+    return $flattened;
+  }
+
+  protected function sortArticles(stdClass $article1, stdclass $article2)
+  {
+    $time1 = DateTime::createFromFormat("Y-m-d H:i:s", $article1->Created);
+    $time2 = DateTime::createFromFormat("Y-m-d H:i:s", $article2->Created);
+    
+    if($time1->getTimestamp() == $time2->getTimestamp()) {
+      return 0;
+    } else {
+      if($time1->getTimestamp() > $time2->getTimestamp()) {
+	return 1;
+      } else {
+	return -1;
+      }
+    }
+  }
+    
+  protected function exportSingleTo($basedir, $id, $handleLinkedTickets)
+  {
+    $articles = $this->otrs->getTicketArticles($id);
+    if($articles instanceof stdClass) {
+      $articles = array($articles);
+    }
+    return $this->exportTo($basedir, $id, $articles);
+  }
+  
+  protected function exportTo($basedir, $id, array $articles)
   {
     $articleData = array();
-    $articles = $this->otrs->getTicketArticles($this->id);
-    if($articles instanceof stdClass) {
-	$articleData[] = $this->exportArticle($basedir, $articles, 0);
-    } else {
-      foreach($articles as $index => $article) {
-	$articleData[$index] = $this->exportArticle($basedir, $article, $index);
-      } 
+    foreach($articles as $index => $article) {
+      $articleData[$index] = $this->exportArticle($basedir, $article, $index);
     }
     
     foreach($articleData as $article) {
@@ -84,14 +157,14 @@ class OTRSTicket
       usort($article->attachments, array($this, 'sortAttachments'));
     }
    
-    return $this->exportToTex($basedir, $articleData);
+    return $this->exportToTex($basedir, $id, $articleData);
   }
     
   
-  protected function exportToTex($basedir, $articleData)
+  protected function exportToTex($basedir, $id, $articleData)
   {
-    $ticket = $this->otrs->getTicketDetails($this->id);
-    $ticketFile = tempnam($basedir, "TICKET");
+    $ticket = $this->otrs->getTicketDetails($id);
+    $ticketFile = tempnam($basedir, "TICKET_".$id."_");
     rename($ticketFile, $ticketFile.'.tex');
     $ticketFile = $ticketFile.'.tex';
     
@@ -174,6 +247,8 @@ class OTRSTicket
 \fancyhf{}
 \fancyhead[L]{Note}
 EOT;
+var_dump($id);
+var_dump($ticket);
 $DokumentIdentifier = isset($ticket['DynamicField_Aktenzeichen']) ? $ticket['DynamicField_Aktenzeichen'] : $ticket['TicketNumber'];
 $data .= '\title{Aktenexport von '.($DokumentIdentifier).'}'.PHP_EOL;
 $data .= '\author{otrs2akte \thanks{otrs2akte CC-BY-SA Florian Zumkeller-Quast}}'.PHP_EOL;
@@ -356,6 +431,12 @@ EOT;
     $attachmentTexCode .= '\verbatiminput{'.$this->escapeFilenameForTex($attachment->LocalFile).'}'.PHP_EOL;
   }
   
+  protected function importIgnoreToTex(& $texCode, & $attachmentTexCode, stdClass $attachment)
+  {
+    //! Do exactly nothing
+    return;
+  }
+  
   protected function importPdfToTex(& $texCode, & $attachmentTexCode, stdClass $attachment)
   {
     $this->importAttachmentToToc($attachmentTexCode, $attachment);
@@ -368,6 +449,11 @@ EOT;
     } else {
       echo 'ERROR: Failed to move file '.$attachment->LocalFile.' to '.$backup.' and convert it.'.PHP_EOL;
     }
+    //! \includepdf has problems with a missing fileextension.
+    $extension = substr($attachment->LocalFile, strrpos($attachment->LocalFile, '.'));
+    if($extension != '.pdf' && rename($attachment->LocalFile, $attachment->LocalFile.'.pdf')) {
+      $attachment->LocalFile .= '.pdf';
+    }
     
     //! Is already done by includepdf
     // $attachmentTexCode .= '\clearpage'.PHP_EOL;
@@ -378,6 +464,10 @@ EOT;
   protected function importAttachmentToToc(& $texCode, stdClass $attachment, $level = 'subsection')
   {
     $texCode .= '\addcontentsline{toc}{'.$level.'}{'.$this->escapeContentslineForTex($attachment->Filename).'}'.PHP_EOL;
+  }
+  
+  protected function exportMboxContainer($attachment)
+  {
   }
   
   protected function exportEmailContainer($attachment)
@@ -416,12 +506,14 @@ EOT;
   
   protected function exportZipContainer($attachment)
   {
-    return array($attachment);
+  var_dump('#####################');
+  var_dump($attachment->LocalFile);
+    return array();
   }
   
   protected function exportRarContainer($attachment)
   {
-    return array($attachment);
+    return array();
   }
   
   protected function isContainerType($filetype)
@@ -429,9 +521,9 @@ EOT;
     return method_exists($this, 'export'.$filetype.'Container');
   }
   
-  protected function getAttachmentFiletype(stdClass $attachment)
+  protected function getAttachmentFiletypeByMimetype($mimetype)
   {
-    switch($attachment->ContentType)
+    switch($mimetype)
     {
       case 'text/plain':
 	return 'Plaintext';
@@ -444,36 +536,121 @@ EOT;
       case 'application/x-pdf':
 	return 'Pdf';
 	break;
+      case 'application/mbox':
+	return 'Mbox';
+	break;
       case 'message/rfc822':
 	return 'Email';
 	break;
-      case 'application/pgp-signature': //! TODO Should be handled specially
+      case 'application/zip':
+	return 'Zip';
+	break;
+      case 'application/rar':
+	return 'Rar';
+	break;
+      case 'application/pgp-signature': //! TODO Should maybe handled specially
+	return 'Ignore';
+	break;
       case false:
       default:
-	$extension = substr($attachment->Filename, strrpos($attachment->Filename, '.'));
-	switch($extension)
-	{
-	  case '.txt':
-	    return 'Plaintext';
-	    break;
-	  case '.html':
-	    return 'Html';
-	    break;
-	  case '.pdf':
-	    return 'Pdf';
-	    break;
-	  case '.tex':
-	    return 'Tex';
-	    break;
-	  case '.eml':
-	    return 'Email';
-	    break;
-	  case false:
-	  default:
-	    return null;
-	}
+	return false;
 	break;
     }
+  }
+  
+  protected function getAttachmentFiletypeByExtension($extension)
+  {
+    switch($extension)
+    {
+      case '.txt':
+	return 'Plaintext';
+	break;
+      case '.html':
+	return 'Html';
+	break;
+      case '.pdf':
+	return 'Pdf';
+	break;
+      case '.tex':
+	return 'Tex';
+	break;
+      case '.mbox':
+	return 'Mbox';
+	break;
+      case '.eml':
+	return 'Email';
+	break;
+      case '.zip':
+	return 'Zip';
+	break;
+      case '.rar':
+	return 'Rar';
+	break;
+      case '.asc': //! TODO Should maybe handled specially
+	return 'Ignore';
+	break;
+      case false:
+      default:
+	return null;
+    }
+  }
+	
+  protected function getAttachmentFiletype(stdClass $attachment)
+  {
+  var_dump('#####################');
+//     //! ugly hotFix because some containers (e.g. mbox) seems to be constantly misdetected 
+    $extension = substr($attachment->Filename, strrpos($attachment->Filename, '.'));
+//     $type = $this->getAttachmentFiletypeByExtension($extension);
+//     var_dump($extension);
+//     var_dump($type);
+//     if($this->isContainerType($type)) {
+//       return $type;
+//     }
+    
+    $fp = fopen($attachment->LocalFile, 'r');
+    $offsetSecondLine = 0;
+    do {
+      $offsetSecondLine++;
+    } while(fgetc($fp) != "\n");
+    fclose($fp);
+//     $data = fgets($fp);
+    
+    $mimeinfo =<<<EOI
+#------------------------------------------------------------------------------
+0	string		From 		mbox prefix
+&$offsetSecondLine	string/t		Return-Path: 	mbox mail container
+!:mime	application/mbox
+0	string		From 		mbox prefix
+&$offsetSecondLine	string/t		Delivered-To: 	mbox mail container
+!:mime	application/mbox
+0	string/t		From:		news or mail text
+!:mime	message/rfc822
+
+EOI;
+    $mimeinfofile = tempnam(sys_get_temp_dir(), 'mimeinfo');
+    file_put_contents($mimeinfofile, $mimeinfo);
+    $info = new finfo(FILEINFO_MIME_TYPE, $mimeinfofile);
+    var_dump($info->file($attachment->LocalFile));
+    
+    $type = $this->getAttachmentFiletypeByMimetype($info->file($attachment->LocalFile));
+    var_dump($mimeinfofile);
+    var_dump($type);
+    if($type === false) {
+      $type = $this->getAttachmentFiletypeByMimetype($attachment->ContentType);
+      if($type === false) {
+	$info = new finfo(FILEINFO_MIME_TYPE);
+	$type = $this->getAttachmentFiletypeByMimetype($info->file($attachment->LocalFile));
+	if($type === false) {
+	  $type = $this->getAttachmentFiletypeByExtension($extension);
+	}
+      }
+    }
+    var_dump($attachment->LocalFile);
+    var_dump($type);
+    
+  var_dump('##########====================###########');
+//     unlink($mimeinfofile);
+    return $type;
   }
   
   protected function exportArticle($basedir, $article, $index)
@@ -481,21 +658,6 @@ EOT;
     $articleFile = tempnam($basedir, "ARTICLE-".$article->ArticleID."-");
     $handle = fopen($articleFile, "w");
     
-//     fwrite($handle, "ContentType: ");
-//     fwrite($handle, $article->ContentType);
-//     fwrite($handle, PHP_EOL);
-//     fwrite($handle, "Charset: ");
-//     fwrite($handle, $article->Charset);
-//     fwrite($handle, PHP_EOL);
-//     fwrite($handle, "ContentCharset: ");
-//     fwrite($handle, $article->ContentCharset);
-//     fwrite($handle, PHP_EOL);
-//     fwrite($handle, "MimeType: ");
-//     fwrite($handle, $article->MimeType);
-//     fwrite($handle, PHP_EOL);
-//     fwrite($handle, "MessageID: ");
-//     fwrite($handle, $article->MessageID);
-//     fwrite($handle, PHP_EOL);
 //     fwrite($handle, "InReplyTo: ");
 //     fwrite($handle, $article->InReplyTo);
 //     fwrite($handle, PHP_EOL);
@@ -508,15 +670,18 @@ EOT;
 //     fwrite($handle, PHP_EOL);
 //     fwrite($handle, PHP_EOL);
     
-//     fwrite($handle, "Title: ");
-//     fwrite($handle, $article->Title);
-//     fwrite($handle, PHP_EOL);
 //     fwrite($handle, "TicketID: ");
 //     fwrite($handle, $article->TicketID);
 //     fwrite($handle, PHP_EOL);
-//     fwrite($handle, "TicketNumber: ");
-//     fwrite($handle, $article->TicketNumber);
-//     fwrite($handle, PHP_EOL);
+    fwrite($handle, "TicketNumber: ");
+    fwrite($handle, $article->TicketNumber);
+    fwrite($handle, PHP_EOL);
+    fwrite($handle, "Title: ");
+    fwrite($handle, $article->Title);
+    fwrite($handle, PHP_EOL);
+    fwrite($handle, "MessageID: ");
+    fwrite($handle, $article->MessageID);
+    fwrite($handle, PHP_EOL);
 //     fwrite($handle, "ArticleID: ");
 //     fwrite($handle, $article->ArticleID);
 //     fwrite($handle, PHP_EOL);
