@@ -1,0 +1,16 @@
+otrs2akte
+=====================
+
+Dieses kleine Tool wurde gebaut, um aus OTRS-Tickets für uns im Schiedsgericht brauchbare Akten zu erzeugen.
+Die Anforderungen sind nicht hoch, es geht primär darum, eine chronologische Reihenfolge zu haben.
+
+Benötigt wird ein SOAP-Zugang zur OTRS-Instanz sowie ein normaler OTRS-User.
+
+Erzeugt wird eine XeLaTeX Datei, die dann zu einem PDF gerendert werden kann.
+
+Beispielaufruf:
+./otrs2akte.php --host=https://domain.tld/otrs/rpc.pl --user=otrssoap --pass=otrssoap --login=otrsuser --number=<OTRS_TICKET_NUMBER> --with-links-merged
+
+Der Pfad zur XeLaTeX-Datei wird am Ende dann ausgegeben.
+
+
